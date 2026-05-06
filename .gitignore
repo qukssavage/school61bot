@@ -3,6 +3,9 @@
 credentials.json
 tokens.json
 
+# Claude Code
+.claude/
+
 # Python
 __pycache__/
 *.py[cod]
