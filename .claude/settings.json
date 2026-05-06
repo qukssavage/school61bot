@@ -1,7 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(/Users/qoqos/Desktop/projects/school61/venv/bin/pip install *)"
-    ]
-  }
-}
