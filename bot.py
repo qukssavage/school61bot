@@ -119,7 +119,11 @@ def compute_averages(role: str) -> list[dict]:
 
 def update_averages_sheet():
     """Записывает средние баллы в лист «Статистика»."""
-    creds = Credentials.from_service_account_file(GOOGLE_CREDS_FILE, scopes=SCOPES)
+    raw = os.getenv("GOOGLE_CREDS_JSON") or os.getenv("GOOGLE_CREDS_FILE", "credentials.json")
+    if raw.strip().startswith("{"):
+        creds = Credentials.from_service_account_info(json.loads(raw), scopes=SCOPES)
+    else:
+        creds = Credentials.from_service_account_file(raw, scopes=SCOPES)
     client = gspread.authorize(creds)
     spreadsheet = client.open(SPREADSHEET_NAME)
 
@@ -692,7 +696,11 @@ async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     try:
-        creds = Credentials.from_service_account_file(GOOGLE_CREDS_FILE, scopes=SCOPES)
+        raw = os.getenv("GOOGLE_CREDS_JSON") or os.getenv("GOOGLE_CREDS_FILE", "credentials.json")
+        if raw.strip().startswith("{"):
+            creds = Credentials.from_service_account_info(json.loads(raw), scopes=SCOPES)
+        else:
+            creds = Credentials.from_service_account_file(raw, scopes=SCOPES)
         client = gspread.authorize(creds)
         spreadsheet = client.open(SPREADSHEET_NAME)
 
