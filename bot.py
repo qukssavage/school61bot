@@ -22,7 +22,6 @@ load_dotenv()
 # Настройки
 # ──────────────────────────────────────────────
 BOT_TOKEN         = os.environ["BOT_TOKEN"]
-GOOGLE_CREDS_FILE = os.getenv("GOOGLE_CREDS_FILE", "credentials.json")
 SPREADSHEET_NAME  = os.getenv("SPREADSHEET_NAME", "Школьные анкеты")
 ADMIN_IDS         = [int(i) for i in os.getenv("ADMIN_IDS", "").split(",") if i.strip()]
 TOKENS_SHEET      = "_tokens"
@@ -61,13 +60,15 @@ def save_tokens(tokens: dict):
         sheet.append_rows([[t, d["role"], d["label"]] for t, d in tokens.items()])
 
 
-def get_sheet(sheet_name: str):
+def get_credentials() -> Credentials:
     raw = os.getenv("GOOGLE_CREDS_JSON") or os.getenv("GOOGLE_CREDS_FILE", "credentials.json")
     if raw.strip().startswith("{"):
-        creds = Credentials.from_service_account_info(json.loads(raw), scopes=SCOPES)
-    else:
-        creds = Credentials.from_service_account_file(raw, scopes=SCOPES)
-    client = gspread.authorize(creds)
+        return Credentials.from_service_account_info(json.loads(raw), scopes=SCOPES)
+    return Credentials.from_service_account_file(raw, scopes=SCOPES)
+
+
+def get_sheet(sheet_name: str):
+    client = gspread.authorize(get_credentials())
     spreadsheet = client.open(SPREADSHEET_NAME)
     try:
         return spreadsheet.worksheet(sheet_name)
@@ -119,12 +120,7 @@ def compute_averages(role: str) -> list[dict]:
 
 def update_averages_sheet():
     """Записывает средние баллы в лист «Статистика»."""
-    raw = os.getenv("GOOGLE_CREDS_JSON") or os.getenv("GOOGLE_CREDS_FILE", "credentials.json")
-    if raw.strip().startswith("{"):
-        creds = Credentials.from_service_account_info(json.loads(raw), scopes=SCOPES)
-    else:
-        creds = Credentials.from_service_account_file(raw, scopes=SCOPES)
-    client = gspread.authorize(creds)
+    client = gspread.authorize(get_credentials())
     spreadsheet = client.open(SPREADSHEET_NAME)
 
     try:
@@ -287,7 +283,7 @@ QUESTIONS_STUDENTS = [
     {
         "id": "s3", "header": "Отношения с одноклассниками",
         "section": None,
-        "text": "Как ты относишься к одноклassникам?",
+        "text": "Как ты относишься к одноклассникам?",
         "type": "choice",
         "options": ["😊 Отлично, дружим", "🙂 Хорошо", "😐 Нейтрально", "🙁 Есть конфликты", "😞 Очень плохо"],
     },
@@ -696,12 +692,7 @@ async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     try:
-        raw = os.getenv("GOOGLE_CREDS_JSON") or os.getenv("GOOGLE_CREDS_FILE", "credentials.json")
-        if raw.strip().startswith("{"):
-            creds = Credentials.from_service_account_info(json.loads(raw), scopes=SCOPES)
-        else:
-            creds = Credentials.from_service_account_file(raw, scopes=SCOPES)
-        client = gspread.authorize(creds)
+        client = gspread.authorize(get_credentials())
         spreadsheet = client.open(SPREADSHEET_NAME)
 
         lines = [f"📊 *Статистика анкет*\n🔗 [{SPREADSHEET_NAME}]({spreadsheet.url})\n"]
