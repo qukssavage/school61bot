@@ -25,7 +25,7 @@ BOT_TOKEN         = os.environ["BOT_TOKEN"]
 GOOGLE_CREDS_FILE = os.getenv("GOOGLE_CREDS_FILE", "credentials.json")
 SPREADSHEET_NAME  = os.getenv("SPREADSHEET_NAME", "Школьные анкеты")
 ADMIN_IDS         = [int(i) for i in os.getenv("ADMIN_IDS", "").split(",") if i.strip()]
-TOKENS_FILE       = "tokens.json"
+TOKENS_SHEET      = "_tokens"
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -46,19 +46,28 @@ SCOPES = [
 # ──────────────────────────────────────────────
 
 def load_tokens() -> dict:
-    if os.path.exists(TOKENS_FILE):
-        with open(TOKENS_FILE, encoding="utf-8") as f:
-            return json.load(f)
-    return {}
+    sheet = get_sheet(TOKENS_SHEET)
+    rows = sheet.get_all_values()
+    if not rows or rows[0] != ["token", "role", "label"]:
+        return {}
+    return {r[0]: {"role": r[1], "label": r[2]} for r in rows[1:] if r[0]}
 
 
 def save_tokens(tokens: dict):
-    with open(TOKENS_FILE, "w", encoding="utf-8") as f:
-        json.dump(tokens, f, ensure_ascii=False, indent=2)
+    sheet = get_sheet(TOKENS_SHEET)
+    sheet.clear()
+    sheet.append_row(["token", "role", "label"])
+    if tokens:
+        sheet.append_rows([[t, d["role"], d["label"]] for t, d in tokens.items()])
 
 
 def get_sheet(sheet_name: str):
-    creds = Credentials.from_service_account_file(GOOGLE_CREDS_FILE, scopes=SCOPES)
+    google_creds_json = os.getenv("GOOGLE_CREDS_JSON")
+    if google_creds_json:
+        creds_info = json.loads(google_creds_json)
+        creds = Credentials.from_service_account_info(creds_info, scopes=SCOPES)
+    else:
+        creds = Credentials.from_service_account_file(GOOGLE_CREDS_FILE, scopes=SCOPES)
     client = gspread.authorize(creds)
     spreadsheet = client.open(SPREADSHEET_NAME)
     try:
@@ -71,6 +80,66 @@ def ensure_header(sheet, headers: list):
     existing = sheet.row_values(1)
     if not existing:
         sheet.append_row(headers, value_input_option="USER_ENTERED")
+
+
+def compute_averages(role: str) -> list[dict]:
+    """Читает лист и считает средний балл для звёздных вопросов."""
+    sheet_name = "Родители" if role == "parent" else "Ученики"
+    questions = get_questions(role)
+    star_questions = [q for q in questions if is_star_question(q)]
+    if not star_questions:
+        return []
+
+    sheet = get_sheet(sheet_name)
+    rows = sheet.get_all_values()
+    if len(rows) < 2:
+        return []
+
+    headers = rows[0]
+    results = []
+    for q in star_questions:
+        score_map = get_score_map(q)
+        try:
+            col_idx = headers.index(q["header"])
+        except ValueError:
+            continue
+
+        scores = []
+        for row in rows[1:]:
+            cell = row[col_idx] if col_idx < len(row) else ""
+            if cell in score_map:
+                scores.append(score_map[cell])
+
+        results.append({
+            "header": q["header"],
+            "avg": round(sum(scores) / len(scores), 2) if scores else None,
+            "count": len(scores),
+        })
+    return results
+
+
+def update_averages_sheet():
+    """Записывает средние баллы в лист «Статистика»."""
+    creds = Credentials.from_service_account_file(GOOGLE_CREDS_FILE, scopes=SCOPES)
+    client = gspread.authorize(creds)
+    spreadsheet = client.open(SPREADSHEET_NAME)
+
+    try:
+        stat_sheet = spreadsheet.worksheet("Статистика")
+    except gspread.WorksheetNotFound:
+        stat_sheet = spreadsheet.add_worksheet(title="Статистика", rows=100, cols=5)
+
+    # Собираем строки для обеих ролей
+    all_rows = [["Категория", "Вопрос", "Средний балл (из 5)", "Кол-во ответов", "Обновлено"]]
+    updated_at = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    for r, label in [("parent", "Родители"), ("student", "Ученики")]:
+        for item in compute_averages(r):
+            avg_str = f"{item['avg']:.2f}" if item["avg"] is not None else "—"
+            all_rows.append([label, item["header"], avg_str, item["count"], updated_at])
+
+    stat_sheet.clear()
+    stat_sheet.update(all_rows, value_input_option="USER_ENTERED")
 
 
 def save_to_sheets(role: str, user_data: dict, user_id: int, username: str):
@@ -297,6 +366,15 @@ def clean_option(text: str) -> str:
     return parts[1] if len(parts) > 1 else text
 
 
+def is_star_question(q: dict) -> bool:
+    return q["type"] == "choice" and any("⭐" in opt for opt in q.get("options", []))
+
+
+def get_score_map(q: dict) -> dict[str, int]:
+    """Возвращает {очищенный текст ответа: кол-во звёзд} для звёздного вопроса."""
+    return {clean_option(opt): opt.count("⭐") for opt in q["options"]}
+
+
 def progress_bar(step: int, total: int) -> str:
     filled = round(step / total * 10)
     return f"[{'█' * filled}{'░' * (10 - filled)}] {step}/{total}"
@@ -453,13 +531,19 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_begin(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.answer()
+    try:
+        await update.callback_query.answer()
+    except Exception:
+        return
     await send_question(update, context, step=0, edit=True)
 
 
 async def handle_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
+    try:
+        await query.answer()
+    except Exception:
+        return
 
     _, question_id, value = query.data.split(":", 2)
 
@@ -468,7 +552,7 @@ async def handle_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     questions = get_questions(role)
     step = user_data["step"]
 
-    if questions[step]["id"] != question_id:
+    if step >= len(questions) or questions[step]["id"] != question_id:
         return
 
     answer_text = "—" if value == "skip" else clean_option(questions[step]["options"][int(value)])
@@ -490,6 +574,7 @@ async def finish(update: Update, context: ContextTypes.DEFAULT_TYPE, edit: bool)
     # Сохраняем в Google Sheets
     try:
         save_to_sheets(role, context.user_data, user.id, user.username)
+        update_averages_sheet()
         sheets_status = "✅ Ответы сохранены в таблицу."
     except Exception as e:
         logger.error(f"Google Sheets error: {e}")
@@ -577,6 +662,30 @@ async def cmd_listlinks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
+async def cmd_averages(update: Update, _context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if ADMIN_IDS and user.id not in ADMIN_IDS:
+        await update.message.reply_text("⛔ Нет доступа.")
+        return
+
+    try:
+        update_averages_sheet()
+        lines = ["📊 *Средние баллы по звёздным вопросам*\n"]
+        for role, label in [("parent", "👨‍👩‍👧 Родители"), ("student", "🎒 Ученики")]:
+            avgs = compute_averages(role)
+            if not avgs:
+                continue
+            lines.append(f"*{label}*")
+            for item in avgs:
+                avg_str = f"{item['avg']:.2f} ⭐ ({item['count']} отв.)" if item["avg"] is not None else "— (нет данных)"
+                lines.append(f"  • {item['header']}: {avg_str}")
+            lines.append("")
+        lines.append("_Лист «Статистика» обновлён._")
+        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка:\n`{e}`", parse_mode="Markdown")
+
+
 async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if ADMIN_IDS and user.id not in ADMIN_IDS:
@@ -612,6 +721,7 @@ def main():
 
     app.add_handler(CommandHandler("start",     start))
     app.add_handler(CommandHandler("stats",     cmd_stats))
+    app.add_handler(CommandHandler("averages",  cmd_averages))
     app.add_handler(CommandHandler("genlinks",  cmd_genlinks))
     app.add_handler(CommandHandler("listlinks", cmd_listlinks))
 
