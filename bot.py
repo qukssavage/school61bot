@@ -62,12 +62,11 @@ def save_tokens(tokens: dict):
 
 
 def get_sheet(sheet_name: str):
-    google_creds_json = os.getenv("GOOGLE_CREDS_JSON")
-    if google_creds_json:
-        creds_info = json.loads(google_creds_json)
-        creds = Credentials.from_service_account_info(creds_info, scopes=SCOPES)
+    raw = os.getenv("GOOGLE_CREDS_JSON") or os.getenv("GOOGLE_CREDS_FILE", "credentials.json")
+    if raw.strip().startswith("{"):
+        creds = Credentials.from_service_account_info(json.loads(raw), scopes=SCOPES)
     else:
-        creds = Credentials.from_service_account_file(GOOGLE_CREDS_FILE, scopes=SCOPES)
+        creds = Credentials.from_service_account_file(raw, scopes=SCOPES)
     client = gspread.authorize(creds)
     spreadsheet = client.open(SPREADSHEET_NAME)
     try:
